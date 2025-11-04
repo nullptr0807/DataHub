@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import json
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from binance.spot import Spot
 
@@ -28,7 +29,6 @@ BINANCE_INTERVALS = {
     "1M": 2_592_000_000,
 }
 AGG_TRADE_LIMIT = 1000
-DEFAULT_SECOND_START = dt.datetime(2025, 11, 1, tzinfo=dt.timezone.utc)
 COMMON_QUOTES = [
     "USDT",
     "BUSD",
@@ -56,6 +56,39 @@ COMMON_QUOTES = [
     "DAI",
     "UST",
 ]
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = REPO_ROOT / "config.json"
+
+
+def load_config(path: Path | None = None) -> dict[str, Any]:
+
+    target = path or CONFIG_PATH
+    if not target.exists():
+        return {}
+
+    try:
+        with target.open("r", encoding="utf-8") as config_file:
+            return json.load(config_file)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse {target}: {exc}") from exc
+
+
+def resolve_output_path(path: Path) -> Path:
+
+    return path if path.is_absolute() else (Path.cwd() / path).resolve()
+
+
+def format_display_path(path: Path) -> str:
+
+    cwd = Path.cwd()
+    try:
+        return str(path.relative_to(cwd))
+    except ValueError:
+        try:
+            return str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(path)
 
 COMMON_QUOTES = [
     "USDT",
@@ -110,8 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--days",
         type=int,
-        default=365,
-        help="Number of days to look back from now (default: 365).",
+        help="Number of days to look back from now (overrides config start when provided).",
     )
     parser.add_argument(
         "--output",
@@ -274,7 +306,7 @@ def parse_targets(args: argparse.Namespace) -> list[tuple[str, str, Path, str]]:
     if not args.target:
         interval = "1s" if args.mode == "second" else args.interval
         mode = args.mode
-        return [(symbol, interval, args.output, mode)]
+        return [(symbol, interval, resolve_output_path(args.output), mode)]
 
     targets: list[tuple[str, str, Path, str]] = []
     for item in args.target:
@@ -283,9 +315,9 @@ def parse_targets(args: argparse.Namespace) -> list[tuple[str, str, Path, str]]:
         interval_raw, path_raw = item.split("=", 1)
         interval = interval_raw.strip()
         if interval == "1s":
-            mode = "second"
+            target_mode = "second"
         elif interval in BINANCE_INTERVALS:
-            mode = "kline"
+            target_mode = "kline"
         else:
             raise ValueError(
                 f"Interval '{interval}' is not supported. Choose from 1s or {', '.join(sorted(BINANCE_INTERVALS))}."
@@ -293,8 +325,8 @@ def parse_targets(args: argparse.Namespace) -> list[tuple[str, str, Path, str]]:
         path_str = path_raw.strip()
         if not path_str:
             raise ValueError(f"Output path missing in target '{item}'.")
-        path = Path(path_str)
-        targets.append((symbol, interval, path, mode))
+        path = resolve_output_path(Path(path_str))
+        targets.append((symbol, interval, path, target_mode))
 
     if not targets:
         raise ValueError("No valid targets supplied.")
@@ -353,7 +385,7 @@ def discover_targets(directory: Path, default_symbol: str) -> list[tuple[str, st
         else:
             continue
 
-        targets.append((symbol, match_interval, csv_path, mode))
+        targets.append((symbol, match_interval, csv_path.resolve(), mode))
 
     if not targets:
         raise ValueError(f"No CSV files with interval suffix found in {directory}.")
@@ -475,6 +507,32 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        config = load_config()
+    except RuntimeError as exc:
+        print(f"Error loading config: {exc}")
+        return 1
+
+    defaults_section = config.get("defaults", {}) if isinstance(config, dict) else {}
+
+    default_kline_start = dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc)
+    kline_start_cfg = defaults_section.get("kline_start") if isinstance(defaults_section, dict) else None
+    if kline_start_cfg:
+        try:
+            default_kline_start = parse_iso_datetime(kline_start_cfg)
+        except ValueError as exc:
+            print(f"Error parsing defaults.kline_start in config: {exc}")
+            return 1
+
+    default_second_start = dt.datetime(2025, 11, 1, tzinfo=dt.timezone.utc)
+    second_start_cfg = defaults_section.get("second_start") if isinstance(defaults_section, dict) else None
+    if second_start_cfg:
+        try:
+            default_second_start = parse_iso_datetime(second_start_cfg)
+        except ValueError as exc:
+            print(f"Error parsing defaults.second_start in config: {exc}")
+            return 1
+
+    try:
         start_override = parse_iso_datetime(args.start) if args.start else None
     except ValueError as exc:
         print(f"Error parsing --start: {exc}")
@@ -503,27 +561,29 @@ def main(argv: list[str] | None = None) -> int:
 
     total_written = 0
 
-    for symbol, interval, output, mode in targets:
+    for symbol, interval, output_path, dataset_mode in targets:
+        output_path = output_path.resolve()
+        display_path = format_display_path(output_path)
         end_dt = end_override or end_reference
         end_ms = int(end_dt.timestamp() * 1000)
 
         try:
-            if mode == "second":
+            if dataset_mode == "second":
                 if args.append:
                     try:
-                        last_open_ms = read_last_open_time(output)
+                        last_open_ms = read_last_open_time(output_path)
                     except (FileNotFoundError, ValueError) as exc:
-                        print(f"Error: cannot append to {output}: {exc}")
+                        print(f"Error: cannot append to {display_path}: {exc}")
                         continue
                     start_ms = last_open_ms + 1000
                     if start_ms >= end_ms:
-                        print(f"{output} already up to date; skipping.")
+                        print(f"{display_path} already up to date; skipping.")
                         continue
                 else:
-                    base_start = start_override or DEFAULT_SECOND_START
+                    base_start = start_override or default_second_start
                     if base_start >= end_dt:
                         print(
-                            f"Requested end precedes start for {output}; nothing to download."
+                            f"Requested end precedes start for {display_path}; nothing to download."
                         )
                         continue
                     start_ms = int(base_start.timestamp() * 1000)
@@ -536,29 +596,34 @@ def main(argv: list[str] | None = None) -> int:
                     args.sleep,
                 )
                 rows = aggregate_trades_to_seconds(trades)
-                written = write_csv(rows, output, append=args.append)
+                written = write_csv(rows, output_path, append=args.append)
                 dataset_label = "1s"
             else:
                 if interval not in BINANCE_INTERVALS:
-                    print(f"Skipping unsupported kline interval '{interval}' for {output}.")
+                    print(f"Skipping unsupported kline interval '{interval}' for {display_path}.")
                     continue
 
                 if args.append:
                     try:
-                        last_open_ms = read_last_open_time(output)
+                        last_open_ms = read_last_open_time(output_path)
                     except (FileNotFoundError, ValueError) as exc:
-                        print(f"Error: cannot append to {output}: {exc}")
+                        print(f"Error: cannot append to {display_path}: {exc}")
                         continue
                     step = BINANCE_INTERVALS[interval]
                     start_ms = last_open_ms + step
                     if start_ms > end_ms:
-                        print(f"{output} already up to date; skipping.")
+                        print(f"{display_path} already up to date; skipping.")
                         continue
                 else:
-                    base_start = start_override or (end_dt - dt.timedelta(days=args.days))
+                    if start_override is not None:
+                        base_start = start_override
+                    elif args.days is not None:
+                        base_start = end_dt - dt.timedelta(days=args.days)
+                    else:
+                        base_start = default_kline_start
                     if base_start >= end_dt:
                         print(
-                            f"Requested end precedes start for {output}; nothing to download."
+                            f"Requested end precedes start for {display_path}; nothing to download."
                         )
                         continue
                     start_ms = int(base_start.timestamp() * 1000)
@@ -571,21 +636,21 @@ def main(argv: list[str] | None = None) -> int:
                     end_ms,
                     args.sleep,
                 )
-                written = write_csv(rows, output, append=args.append)
+                written = write_csv(rows, output_path, append=args.append)
                 dataset_label = interval
         except Exception as exc:  # noqa: BLE001
-            print(f"Error while processing {symbol} {interval} -> {output}: {exc}")
+            print(f"Error while processing {symbol} {interval} -> {display_path}: {exc}")
             continue
 
         if written == 0:
             print(
-                f"No data returned for {symbol} {dataset_label}; {output} left unchanged."
+                f"No data returned for {symbol} {dataset_label}; {display_path} left unchanged."
             )
             continue
 
         verb = "Appended" if args.append else "Downloaded"
-        suffix = "bars" if mode == "second" else "klines"
-        print(f"{verb} {written} {symbol} {dataset_label} {suffix} into {output}")
+        suffix = "bars" if dataset_mode == "second" else "klines"
+        print(f"{verb} {written} {symbol} {dataset_label} {suffix} into {display_path}")
         total_written += written
 
     if total_written == 0 and args.append:

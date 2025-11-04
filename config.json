@@ -1,0 +1,40 @@
+{
+  "binance": {
+    "default_symbol": "BTCUSDT",
+    "api_key_env": "BINANCE_API_KEY",
+    "api_secret_env": "BINANCE_API_SECRET",
+    "sleep_seconds": 0.3
+  },
+  "defaults": {
+    "kline_start": "2025-01-01T00:00:00Z",
+    "second_start": "2025-11-01T00:00:00Z"
+  },
+  "datasets": {
+    "klines": [
+      {
+        "interval": "1m",
+        "output": "Collector/data/btc_1m.csv",
+        "start": "2025-01-01T00:00:00Z"
+      },
+      {
+        "interval": "3m",
+        "output": "Collector/data/btc_3m.csv",
+        "start": "2025-01-01T00:00:00Z"
+      },
+      {
+        "interval": "5m",
+        "output": "Collector/data/btc_5m.csv",
+        "start": "2025-01-01T00:00:00Z"
+      },
+      {
+        "interval": "1h",
+        "output": "Collector/data/btc_1h.csv",
+        "start": "2025-01-01T00:00:00Z"
+      }
+    ],
+    "second": {
+      "output": "Collector/data/btc_1s.csv",
+      "start": "2025-11-01T00:00:00Z"
+    }
+  }
+}
