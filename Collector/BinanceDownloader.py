@@ -28,6 +28,10 @@ BINANCE_INTERVALS = {
     "1w": 604_800_000,
     "1M": 2_592_000_000,
 }
+SECOND_INTERVALS = {
+    "1s": 1_000,
+    "10s": 10_000,
+}
 AGG_TRADE_LIMIT = 1000
 COMMON_QUOTES = [
     "USDT",
@@ -90,34 +94,46 @@ def format_display_path(path: Path) -> str:
         except ValueError:
             return str(path)
 
-COMMON_QUOTES = [
-    "USDT",
-    "BUSD",
-    "USDC",
-    "FDUSD",
-    "TUSD",
-    "USDD",
-    "USDP",
-    "GUSD",
-    "BTC",
-    "ETH",
-    "BNB",
-    "TRY",
-    "EUR",
-    "GBP",
-    "AUD",
-    "BRL",
-    "BIDR",
-    "IDRT",
-    "RUB",
-    "NGN",
-    "UAH",
-    "ZAR",
-    "PAX",
-    "DAI",
-    "UST",
-]
 
+def build_dataset_overrides(config: dict[str, Any]) -> dict[tuple[str, str, Path], dict[str, Any]]:
+    overrides: dict[tuple[str, str, Path], dict[str, Any]] = {}
+    if not isinstance(config, dict):
+        return overrides
+
+    datasets = config.get("datasets")
+    if not isinstance(datasets, dict):
+        return overrides
+
+    kline_entries = datasets.get("klines", [])
+    if isinstance(kline_entries, list):
+        for entry in kline_entries:
+            if not isinstance(entry, dict):
+                continue
+            interval = entry.get("interval")
+            output = entry.get("output")
+            if not interval or not output:
+                continue
+            path = resolve_output_path(Path(str(output)))
+            overrides[("kline", str(interval), path)] = entry
+
+    second_section = datasets.get("second")
+    second_entries: list[dict[str, Any]]
+    if isinstance(second_section, dict):
+        second_entries = [second_section]
+    elif isinstance(second_section, list):
+        second_entries = [item for item in second_section if isinstance(item, dict)]
+    else:
+        second_entries = []
+
+    for entry in second_entries:
+        interval = entry.get("interval", "1s")
+        output = entry.get("output")
+        if not output:
+            continue
+        path = resolve_output_path(Path(str(output)))
+        overrides[("second", str(interval), path)] = entry
+
+    return overrides
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -137,8 +153,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         default="1m",
-        choices=sorted(BINANCE_INTERVALS),
-        help="Kline interval to request (default: 1m).",
+        help=(
+            "Interval to request. For klines use Binance intervals (default: 1m). "
+            "For second mode use 1s or 10s (default: 1s)."
+        ),
     )
     parser.add_argument(
         "--days",
@@ -191,7 +209,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.3,
         help="Delay in seconds between requests to stay within rate limits (default: 0.3).",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.interval = args.interval.strip()
+    if args.mode == "second" and args.interval == "1m":
+        args.interval = "1s"
+    return args
 
 
 def iter_klines(
@@ -253,8 +275,8 @@ def write_csv(rows: Iterable[list], output: Path, append: bool) -> int:
         for row in rows:
             open_time_ms = int(row[0])
             close_time_ms = int(row[6])
-            open_time = dt.datetime.utcfromtimestamp(open_time_ms / 1000).isoformat()
-            close_time = dt.datetime.utcfromtimestamp(close_time_ms / 1000).isoformat()
+            open_time = dt.datetime.fromtimestamp(open_time_ms / 1000, dt.UTC).isoformat()
+            close_time = dt.datetime.fromtimestamp(close_time_ms / 1000, dt.UTC).isoformat()
             writer.writerow(
                 [
                     open_time,
@@ -304,8 +326,22 @@ def parse_targets(args: argparse.Namespace) -> list[tuple[str, str, Path, str]]:
     symbol = normalize_symbol(args.symbol)
 
     if not args.target:
-        interval = "1s" if args.mode == "second" else args.interval
-        mode = args.mode
+        if args.mode == "second":
+            interval = args.interval or "1s"
+            if interval not in SECOND_INTERVALS:
+                raise ValueError(
+                    f"Interval '{interval}' is not supported for second mode. "
+                    f"Choose from {', '.join(sorted(SECOND_INTERVALS))}."
+                )
+            mode = "second"
+        else:
+            interval = args.interval
+            if interval not in BINANCE_INTERVALS:
+                raise ValueError(
+                    f"Interval '{interval}' is not a supported kline interval. "
+                    f"Choose from {', '.join(sorted(BINANCE_INTERVALS))}."
+                )
+            mode = "kline"
         return [(symbol, interval, resolve_output_path(args.output), mode)]
 
     targets: list[tuple[str, str, Path, str]] = []
@@ -314,13 +350,14 @@ def parse_targets(args: argparse.Namespace) -> list[tuple[str, str, Path, str]]:
             raise ValueError(f"Invalid target '{item}'. Expected format interval=path.")
         interval_raw, path_raw = item.split("=", 1)
         interval = interval_raw.strip()
-        if interval == "1s":
+        if interval in SECOND_INTERVALS:
             target_mode = "second"
         elif interval in BINANCE_INTERVALS:
             target_mode = "kline"
         else:
             raise ValueError(
-                f"Interval '{interval}' is not supported. Choose from 1s or {', '.join(sorted(BINANCE_INTERVALS))}."
+                f"Interval '{interval}' is not supported. Choose from {', '.join(sorted(SECOND_INTERVALS))} "
+                f"or {', '.join(sorted(BINANCE_INTERVALS))}."
             )
         path_str = path_raw.strip()
         if not path_str:
@@ -351,7 +388,11 @@ def discover_targets(directory: Path, default_symbol: str) -> list[tuple[str, st
     default_base, default_quote = split_symbol(default_symbol)
     default_symbol_upper = normalize_symbol(default_symbol)
 
-    suffixes = sorted(list(BINANCE_INTERVALS.keys()) + ["1s"], key=len, reverse=True)
+    suffixes = sorted(
+        list(BINANCE_INTERVALS.keys()) + list(SECOND_INTERVALS.keys()),
+        key=len,
+        reverse=True,
+    )
 
     for csv_path in sorted(directory.glob("*.csv")):
         stem = csv_path.stem
@@ -378,7 +419,7 @@ def discover_targets(directory: Path, default_symbol: str) -> list[tuple[str, st
         else:
             symbol = clean_symbol
 
-        if match_interval == "1s":
+        if match_interval in SECOND_INTERVALS:
             mode = "second"
         elif match_interval in BINANCE_INTERVALS:
             mode = "kline"
@@ -436,31 +477,31 @@ def iter_agg_trades(
         time.sleep(sleep_seconds)
 
 
-def aggregate_trades_to_seconds(trades: Iterable[dict]) -> Iterable[list]:
-    bucket_second: int | None = None
+def aggregate_trades(trades: Iterable[dict], bucket_ms: int) -> Iterable[list]:
+    bucket_start_ms: int | None = None
     bucket: dict[str, float | int] | None = None
 
     for trade in trades:
-        trade_second = int(trade["T"]) // 1000
+        trade_time_ms = int(trade["T"])
+        slot_start_ms = (trade_time_ms // bucket_ms) * bucket_ms
         price = float(trade["p"])
         quantity = float(trade["q"])
         count = int(trade["l"]) - int(trade["f"]) + 1
         taker_buy_volume = 0.0 if trade["m"] else quantity
         taker_buy_quote = 0.0 if trade["m"] else quantity * price
 
-        if bucket_second != trade_second:
+        if bucket_start_ms != slot_start_ms:
             if bucket is not None:
-                yield _finalize_second_bucket(bucket)
-            bucket_second = trade_second
-            open_time_ms = trade_second * 1000
+                yield _finalize_bucket(bucket)
+            bucket_start_ms = slot_start_ms
             bucket = {
-                "open_time_ms": open_time_ms,
+                "open_time_ms": slot_start_ms,
                 "open": price,
                 "high": price,
                 "low": price,
                 "close": price,
                 "volume": quantity,
-                "close_time_ms": open_time_ms + 999,
+                "close_time_ms": slot_start_ms + bucket_ms - 1,
                 "quote_volume": quantity * price,
                 "trade_count": count,
                 "taker_buy_volume": taker_buy_volume,
@@ -477,10 +518,14 @@ def aggregate_trades_to_seconds(trades: Iterable[dict]) -> Iterable[list]:
             bucket["taker_buy_quote_volume"] = float(bucket["taker_buy_quote_volume"]) + taker_buy_quote
 
     if bucket is not None:
-        yield _finalize_second_bucket(bucket)
+        yield _finalize_bucket(bucket)
 
 
-def _finalize_second_bucket(bucket: dict[str, float | int]) -> list:
+def align_start_ms(start_ms: int, step_ms: int) -> int:
+    return ((start_ms + step_ms - 1) // step_ms) * step_ms
+
+
+def _finalize_bucket(bucket: dict[str, float | int]) -> list:
     def fmt(value: float) -> str:
         return f"{value:.8f}"
 
@@ -511,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(f"Error loading config: {exc}")
         return 1
+
+    dataset_overrides = build_dataset_overrides(config)
 
     defaults_section = config.get("defaults", {}) if isinstance(config, dict) else {}
 
@@ -560,33 +607,73 @@ def main(argv: list[str] | None = None) -> int:
     client = Spot(api_key=args.api_key, api_secret=args.api_secret)
 
     total_written = 0
+    any_append_mode = args.append
 
     for symbol, interval, output_path, dataset_mode in targets:
         output_path = output_path.resolve()
         display_path = format_display_path(output_path)
         end_dt = end_override or end_reference
         end_ms = int(end_dt.timestamp() * 1000)
+        output_exists = output_path.exists()
+        used_append = args.append
+
+        config_entry = dataset_overrides.get((dataset_mode, interval, output_path))
+        config_start: dt.datetime | None = None
+        if config_entry and config_entry.get("start"):
+            try:
+                config_start = parse_iso_datetime(str(config_entry["start"]))
+            except ValueError as exc:
+                print(
+                    f"Warning: ignoring invalid start in config for {display_path}: {exc}"
+                )
+                config_start = None
 
         try:
             if dataset_mode == "second":
+                if interval not in SECOND_INTERVALS:
+                    print(
+                        f"Skipping unsupported second interval '{interval}' for {display_path}."
+                    )
+                    continue
+                step = SECOND_INTERVALS[interval]
+                last_open_ms: int | None = None
+
                 if args.append:
                     try:
                         last_open_ms = read_last_open_time(output_path)
                     except (FileNotFoundError, ValueError) as exc:
                         print(f"Error: cannot append to {display_path}: {exc}")
                         continue
-                    start_ms = last_open_ms + 1000
+                    base_start = start_override or config_start or default_second_start
+                    base_start_ms = align_start_ms(int(base_start.timestamp() * 1000), step)
+                    start_ms = max(last_open_ms + step, base_start_ms)
                     if start_ms >= end_ms:
                         print(f"{display_path} already up to date; skipping.")
                         continue
+                    used_append = True
                 else:
-                    base_start = start_override or default_second_start
+                    base_start = start_override or config_start or default_second_start
                     if base_start >= end_dt:
                         print(
                             f"Requested end precedes start for {display_path}; nothing to download."
                         )
                         continue
-                    start_ms = int(base_start.timestamp() * 1000)
+                    start_ms = align_start_ms(int(base_start.timestamp() * 1000), step)
+
+                    if output_exists:
+                        try:
+                            last_open_ms = read_last_open_time(output_path)
+                        except (FileNotFoundError, ValueError):
+                            last_open_ms = None
+                        if last_open_ms is not None:
+                            candidate_ms = last_open_ms + step
+                            if candidate_ms > start_ms:
+                                start_ms = candidate_ms
+                            used_append = True
+
+                    if start_ms >= end_ms:
+                        print(f"{display_path} already up to date; skipping.")
+                        continue
 
                 trades = iter_agg_trades(
                     client,
@@ -595,9 +682,9 @@ def main(argv: list[str] | None = None) -> int:
                     end_ms,
                     args.sleep,
                 )
-                rows = aggregate_trades_to_seconds(trades)
-                written = write_csv(rows, output_path, append=args.append)
-                dataset_label = "1s"
+                rows = aggregate_trades(trades, step)
+                written = write_csv(rows, output_path, append=used_append)
+                dataset_label = interval
             else:
                 if interval not in BINANCE_INTERVALS:
                     print(f"Skipping unsupported kline interval '{interval}' for {display_path}.")
@@ -610,7 +697,9 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Error: cannot append to {display_path}: {exc}")
                         continue
                     step = BINANCE_INTERVALS[interval]
-                    start_ms = last_open_ms + step
+                    base_start = start_override or config_start or default_kline_start
+                    base_start_ms = align_start_ms(int(base_start.timestamp() * 1000), step)
+                    start_ms = max(last_open_ms + step, base_start_ms)
                     if start_ms > end_ms:
                         print(f"{display_path} already up to date; skipping.")
                         continue
@@ -619,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
                         base_start = start_override
                     elif args.days is not None:
                         base_start = end_dt - dt.timedelta(days=args.days)
+                    elif config_start is not None:
+                        base_start = config_start
                     else:
                         base_start = default_kline_start
                     if base_start >= end_dt:
@@ -648,12 +739,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
 
-        verb = "Appended" if args.append else "Downloaded"
+        verb = "Appended" if used_append else "Downloaded"
         suffix = "bars" if dataset_mode == "second" else "klines"
         print(f"{verb} {written} {symbol} {dataset_label} {suffix} into {display_path}")
         total_written += written
+        any_append_mode = any_append_mode or used_append
 
-    if total_written == 0 and args.append:
+    if total_written == 0 and any_append_mode:
         print("All referenced CSV files appear up to date.")
 
     return 0

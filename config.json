@@ -32,9 +32,17 @@
         "start": "2025-01-01T00:00:00Z"
       }
     ],
-    "second": {
-      "output": "Collector/data/btc_1s.csv",
-      "start": "2025-11-01T00:00:00Z"
-    }
+    "second": [
+      {
+        "interval": "1s",
+        "output": "Collector/data/btc_1s.csv",
+        "start": "2025-11-01T00:00:00Z"
+      },
+      {
+        "interval": "10s",
+        "output": "Collector/data/btc_10s.csv",
+        "start": "2025-01-01T00:00:00Z"
+      }
+    ]
   }
 }
