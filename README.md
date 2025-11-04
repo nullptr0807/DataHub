@@ -31,7 +31,7 @@ The downloader inspects filenames like `btc_1m.csv`, infers the interval, and ap
 `Backtest/GridBasic.py` simulates a grid strategy on the downloaded data. Example:
 
 ```powershell
-python Backtest/GridBasic.py --lower 90000 --upper 110000 --levels 21 --days-back 90
+python Backtest/GridBasic.py --data Collector/data/btc_1m.csv --lower 90000 --upper 110000 --levels 21 --days-back 90
 ```
 
 Key options:
