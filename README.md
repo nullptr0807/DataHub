@@ -42,5 +42,19 @@ Key options:
 - `--quote-balance` / `--base-balance`: starting balances for USDT and BTC.
 - `--days-back`: filter to the most recent N days before running the grid.
 - `--limit`: cap the number of rows processed after filtering.
+- `--risk-free`: annual risk-free rate (decimal) used when reporting the Sharpe ratio (default 0.02).
 
 Run `python Backtest/GridBasic.py --help` for detailed usage and defaults.
+
+The backtest summary prints return metrics along with the annualised Sharpe ratio; `--risk-free` defaults to `0.02` but can be overridden to match your benchmark.
+
+## Web UI (Go)
+
+The `web` directory contains a lightweight Go application that wraps the downloader/backtester and exposes a browser UI for experimenting with different parameters.
+
+1. Install Go (e.g. `brew install go` on macOS) if it is not already available.
+2. Ensure the Python virtual environment is set up (`python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`).
+3. Start the server: `cd web && go run .`.
+4. Visit `http://localhost:8080` to launch the dashboard, tweak grid settings, and run backtests interactively.
+
+The UI calls the existing Python scripts under the hood, so any CSV files produced in `Collector/data` are immediately available for selection.

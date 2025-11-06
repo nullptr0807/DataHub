@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DataHub Control Center</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #101418;
+      color: #f3f6fa;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 1.9rem;
+    }
+    section {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 14px;
+      padding: 20px 24px 28px;
+      margin-bottom: 32px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+    }
+    form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 18px;
+      align-items: end;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+      gap: 6px;
+    }
+    select, input {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      background: rgba(12, 18, 24, 0.85);
+      color: inherit;
+    }
+    button {
+      padding: 12px 20px;
+      border-radius: 999px;
+      border: none;
+      font-weight: 600;
+      font-size: 1rem;
+      background: linear-gradient(135deg, #0ea5e9, #6366f1);
+      color: white;
+      cursor: pointer;
+      transition: filter 0.18s ease-in-out;
+    }
+    button:hover {
+      filter: brightness(1.08);
+    }
+    #status {
+      margin-top: 16px;
+      font-size: 0.95rem;
+      min-height: 1.2em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 0.94rem;
+    }
+    th, td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    th {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.8;
+    }
+    pre {
+      background: rgba(12, 18, 24, 0.85);
+      padding: 14px;
+      border-radius: 10px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+    }
+    .muted {
+      opacity: 0.72;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DataHub Control Center</h1>
+    <section>
+      <h2>Grid Backtest</h2>
+      {{if .CSVFiles}}
+      <form id="backtest-form">
+        <label>
+          Dataset
+          <select name="data" id="data">
+            {{range .CSVFiles}}
+              <option value="{{.Value}}" {{if eq $.DefaultData .Value}}selected{{end}}>{{.Label}}</option>
+            {{end}}
+          </select>
+        </label>
+        <label>
+          Lower bound
+          <input type="number" step="0.01" name="lower" id="lower" value="80000" required />
+        </label>
+        <label>
+          Upper bound
+          <input type="number" step="0.01" name="upper" id="upper" value="120000" required />
+        </label>
+        <label>
+          Levels
+          <input type="number" min="2" name="levels" id="levels" value="{{.DefaultLevels}}" required />
+        </label>
+        <label>
+          Days back
+          <input type="number" min="1" name="days_back" id="days_back" value="{{.DefaultDaysBack}}" />
+        </label>
+        <label>
+          Fee rate
+          <input type="number" step="0.0001" name="fee" id="fee" value="0.001" />
+        </label>
+        <label>
+          Quote balance
+          <input type="number" step="0.01" name="quote_balance" id="quote_balance" value="10000" />
+        </label>
+        <label>
+          Base balance
+          <input type="number" step="0.00000001" name="base_balance" id="base_balance" value="0" />
+        </label>
+        <label>
+          Risk-free rate
+          <input type="number" step="0.0001" name="risk_free" id="risk_free" value="{{printf "%.4f" .DefaultRiskFree}}" />
+        </label>
+        <div>
+          <button type="submit">Run Backtest</button>
+        </div>
+      </form>
+      {{else}}
+        <p>No CSV data files found under <code>Collector/data</code>. Populate the directory and reload.</p>
+      {{end}}
+      <div id="status" class="muted"></div>
+      <div id="results"></div>
+      <div id="raw"></div>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById('backtest-form');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const rawEl = document.getElementById('raw');
+
+    function formatPercent(value) {
+      return (value * 100).toFixed(2) + '%';
+    }
+
+    function renderResult(data) {
+      const res = data.result;
+      const sharpe = res.sharpe_ratio === null || res.sharpe_ratio === undefined ? 'n/a' : res.sharpe_ratio.toFixed(4);
+      resultsEl.innerHTML = `
+        <table>
+          <tbody>
+            <tr><th>Initial Equity</th><td>${res.initial_equity.toFixed(2)} USDT</td></tr>
+            <tr><th>Final Equity</th><td>${res.equity.toFixed(2)} USDT</td></tr>
+            <tr><th>Return</th><td>${formatPercent(res.roi)}</td></tr>
+            <tr><th>BTC Return</th><td>${formatPercent(res.price_return)}</td></tr>
+            <tr><th>Alpha</th><td>${formatPercent(res.alpha)}</td></tr>
+            <tr><th>Sharpe Ratio</th><td>${sharpe}</td></tr>
+            <tr><th>Buy Count</th><td>${res.buy_count}</td></tr>
+            <tr><th>Sell Count</th><td>${res.sell_count}</td></tr>
+            <tr><th>Skipped Buys</th><td>${res.skipped_buys}</td></tr>
+            <tr><th>Skipped Sells</th><td>${res.skipped_sells}</td></tr>
+            <tr><th>Share Value</th><td>${res.share_value.toFixed(2)} USDT</td></tr>
+            <tr><th>Final Price</th><td>${res.final_price.toFixed(2)} USDT</td></tr>
+          </tbody>
+        </table>
+      `;
+      rawEl.innerHTML = '';
+    }
+
+    async function submitForm(event) {
+      event.preventDefault();
+      if (!form) {
+        return;
+      }
+      statusEl.textContent = 'Running backtest...';
+      resultsEl.innerHTML = '';
+      rawEl.innerHTML = '';
+
+      const payload = {
+        data: form.data.value,
+        lower: parseFloat(form.lower.value),
+        upper: parseFloat(form.upper.value),
+        levels: parseInt(form.levels.value || '0', 10),
+        days_back: parseInt(form.days_back.value || '0', 10),
+        fee: parseFloat(form.fee.value || '0'),
+        quote_balance: parseFloat(form.quote_balance.value || '0'),
+        base_balance: parseFloat(form.base_balance.value || '0'),
+        risk_free: parseFloat(form.risk_free.value || '0'),
+      };
+
+      try {
+        const response = await fetch('/api/backtest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          statusEl.textContent = data.error || 'Backtest failed.';
+          rawEl.innerHTML = data.raw_output ? `<pre>${data.raw_output}</pre>` : '';
+          return;
+        }
+        statusEl.textContent = 'Backtest complete.';
+        renderResult(data);
+      } catch (error) {
+        console.error(error);
+        statusEl.textContent = 'Unexpected error. Check console logs.';
+      }
+    }
+
+    if (form) {
+      form.addEventListener('submit', submitForm);
+    }
+  </script>
+</body>
+</html>
