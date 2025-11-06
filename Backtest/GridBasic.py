@@ -65,7 +65,7 @@ def build_grid(lower: float, upper: float, levels: int) -> list[float]:
 def compute_sharpe_ratio(
 	equities: Sequence[float],
 	timestamps: Sequence[dt.datetime],
-	annual_risk_free: float,
+	annual_risk_free: float,``
 ) -> float | None:
 	if len(equities) < 2 or len(equities) != len(timestamps):
 		return None

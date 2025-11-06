@@ -54,7 +54,7 @@ The `web` directory contains a lightweight Go application that wraps the downloa
 
 1. Install Go (e.g. `brew install go` on macOS) if it is not already available.
 2. Ensure the Python virtual environment is set up (`python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`).
-3. Start the server: `cd web && go run .`.
+3. Start the server: `cd web && go run ./src` (or from the repo root `go run ./web/src`).
 4. Visit `http://localhost:8080` to launch the dashboard, tweak grid settings, and run backtests interactively.
 
 The UI calls the existing Python scripts under the hood, so any CSV files produced in `Collector/data` are immediately available for selection.
