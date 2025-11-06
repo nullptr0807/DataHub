@@ -8,7 +8,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 
 @dataclass
@@ -18,6 +18,15 @@ class Candle:
 	high: float
 	low: float
 	close: float
+
+
+@dataclass
+class TradeEvent:
+	timestamp: dt.datetime
+	type: str
+	price: float
+	quantity: float
+	level: float
 
 
 def load_candles(path: Path, limit: int | None = None) -> list[Candle]:
@@ -118,9 +127,11 @@ class GridBacktester:
 		self.sell_count = 0
 		self.skipped_buys = 0
 		self.skipped_sells = 0
+		self.trade_log: list[TradeEvent] = []
 
 	def run(self, candles: Iterable[Candle]) -> list[float]:
 		equities: list[float] = []
+		self.trade_log = []
 		iterator = iter(candles)
 		try:
 			first = next(iterator)
@@ -143,37 +154,38 @@ class GridBacktester:
 		low_extreme = min(candle.low, candle.open, prev_price)
 		high_extreme = max(candle.high, candle.open, prev_price)
 
+		timestamp = candle.timestamp
 		if low_extreme < current:
-			self._traverse_down(current, low_extreme)
+			self._traverse_down(current, low_extreme, timestamp)
 			current = low_extreme
 
 		if high_extreme > current:
-			self._traverse_up(current, high_extreme)
+			self._traverse_up(current, high_extreme, timestamp)
 			current = high_extreme
 
 		close_price = candle.close
 		if close_price < current:
-			self._traverse_down(current, close_price)
+			self._traverse_down(current, close_price, timestamp)
 		elif close_price > current:
-			self._traverse_up(current, close_price)
+			self._traverse_up(current, close_price, timestamp)
 
-	def _traverse_down(self, start_price: float, end_price: float) -> None:
+	def _traverse_down(self, start_price: float, end_price: float, timestamp: dt.datetime) -> None:
 		if end_price >= start_price:
 			return
 		for idx in reversed(range(len(self.levels) - 1)):
 			level = self.levels[idx]
 			if end_price <= level < start_price:
-				self._execute_buy(idx)
+				self._execute_buy(idx, timestamp)
 
-	def _traverse_up(self, start_price: float, end_price: float) -> None:
+	def _traverse_up(self, start_price: float, end_price: float, timestamp: dt.datetime) -> None:
 		if end_price <= start_price:
 			return
 		for idx in range(len(self.levels) - 1):
 			upper = self.levels[idx + 1]
 			if start_price < upper <= end_price:
-				self._execute_sell(idx)
+				self._execute_sell(idx, timestamp)
 
-	def _execute_buy(self, idx: int) -> None:
+	def _execute_buy(self, idx: int, timestamp: dt.datetime) -> None:
 		price = self.levels[idx]
 		if self.positions[idx] > 0:
 			return
@@ -187,8 +199,17 @@ class GridBacktester:
 		self.base_balance += base_amount
 		self.positions[idx] += base_amount
 		self.buy_count += 1
+		self.trade_log.append(
+			TradeEvent(
+				timestamp=timestamp,
+				type="buy",
+				price=price,
+				quantity=base_amount,
+				level=price,
+			)
+		)
 
-	def _execute_sell(self, idx: int) -> None:
+	def _execute_sell(self, idx: int, timestamp: dt.datetime) -> None:
 		if idx >= len(self.positions):
 			return
 		base_amount = self.positions[idx]
@@ -204,6 +225,15 @@ class GridBacktester:
 		self.quote_balance += net_proceeds
 		self.positions[idx] = 0.0
 		self.sell_count += 1
+		self.trade_log.append(
+			TradeEvent(
+				timestamp=timestamp,
+				type="sell",
+				price=price,
+				quantity=base_amount,
+				level=price,
+			)
+		)
 
 	def snapshot(self, mark_price: float) -> dict[str, float | int]:
 		equity = self.quote_balance + self.base_balance * mark_price
@@ -326,6 +356,28 @@ def run_backtest(args: argparse.Namespace) -> dict[str, float | int]:
 	snapshot["initial_equity"] = initial_equity
 	snapshot["final_price"] = final_price
 	snapshot["initial_price"] = initial_price
+	snapshot["grid_levels"] = grid
+	snapshot["candles"] = [
+		{
+			"timestamp": candle.timestamp.isoformat(),
+			"open": candle.open,
+			"high": candle.high,
+			"low": candle.low,
+			"close": candle.close,
+		}
+		for candle in candles
+	]
+	snapshot["trades"] = [
+		{
+			"timestamp": event.timestamp.isoformat(),
+			"type": event.type,
+			"price": event.price,
+			"quantity": event.quantity,
+			"level": event.level,
+		}
+		for event in engine.trade_log
+	]
+	equity_times: list[dt.datetime] = []
 	if candles:
 		if len(candles) > 1:
 			first_delta_seconds = (candles[1].timestamp - candles[0].timestamp).total_seconds()
@@ -340,7 +392,12 @@ def run_backtest(args: argparse.Namespace) -> dict[str, float | int]:
 		sharpe_ratio = compute_sharpe_ratio(equities, equity_times, args.risk_free)
 	else:
 		sharpe_ratio = None
+		equity_times = []
 	snapshot["sharpe_ratio"] = sharpe_ratio
+	snapshot["equity_curve"] = [
+		{"timestamp": stamp.isoformat(), "equity": equity}
+		for stamp, equity in zip(equity_times, equities)
+	]
 	return snapshot
 
 
