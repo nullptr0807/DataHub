@@ -28,10 +28,10 @@ python Collector/BinanceDownloader.py --scan-dir Collector/data --append
 The downloader inspects filenames like `btc_1m.csv`, infers the interval, and appends only unseen rows.
 
 ## Grid Strategy Backtest Framework
-`Backtest/GridBasic.py` simulates a grid strategy on the downloaded data. Example:
+`Backtest/strategies/grid_basic.py` simulates a grid strategy on the downloaded data. Example:
 
 ```powershell
-python Backtest/GridBasic.py --data Collector/data/btc_1m.csv --lower 90000 --upper 110000 --levels 21 --days-back 90
+python Backtest/strategies/grid_basic.py --data Collector/data/btc_1m.csv --lower 90000 --upper 110000 --levels 21 --days-back 90
 ```
 
 Key options:
@@ -44,7 +44,7 @@ Key options:
 - `--limit`: cap the number of rows processed after filtering.
 - `--risk-free`: annual risk-free rate (decimal) used when reporting the Sharpe ratio (default 0.02).
 
-Run `python Backtest/GridBasic.py --help` for detailed usage and defaults.
+Run `python Backtest/strategies/grid_basic.py --help` for detailed usage and defaults.
 
 The backtest summary prints return metrics along with the annualised Sharpe ratio; `--risk-free` defaults to `0.02` but can be overridden to match your benchmark.
 

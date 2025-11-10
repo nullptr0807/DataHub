@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 var (
 	repoRoot      string
 	pythonBinary  string
+	gridScript    string
 	tmplIndex     *template.Template
 	defaultData   = filepath.ToSlash(filepath.Join("Collector", "data", "btc_1m.csv"))
 	defaultLevels = 21
@@ -54,12 +56,29 @@ func run() error {
 	}
 	repoRoot = repoRootAbs
 
-	pythonBinary = filepath.Join(repoRoot, ".venv", "bin", "python")
-	if _, err := os.Stat(pythonBinary); err != nil {
-		return fmt.Errorf("python interpreter not found at %s: %w", pythonBinary, err)
+	pythonCandidates := pythonPathsForPlatform()
+	for _, candidate := range pythonCandidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			pythonBinary = candidate
+			break
+		}
 	}
-	if _, err := os.Stat(filepath.Join(repoRoot, "Backtest", "GridBasic.py")); err != nil {
-		return fmt.Errorf("GridBasic.py not found: %w", err)
+	if pythonBinary == "" {
+		fallbacks := []string{"python3", "python"}
+		for _, name := range fallbacks {
+			if path, err := exec.LookPath(name); err == nil {
+				pythonBinary = path
+				break
+			}
+		}
+		if pythonBinary == "" {
+			return fmt.Errorf("python interpreter not found; checked %v and PATH", pythonCandidates)
+		}
+	}
+
+	gridScript = filepath.Join(repoRoot, "Backtest", "strategies", "grid_basic.py")
+	if _, err := os.Stat(gridScript); err != nil {
+		return fmt.Errorf("grid_basic.py not found: %w", err)
 	}
 
 	templatePath := filepath.Join(repoRoot, "web", "templates", "index.html")
@@ -301,7 +320,7 @@ func runBacktestRange(req backtestRequest) ([]rangeResult, *rangeSummary, string
 
 func executeBacktest(dataPath string, req backtestRequest, levels int) (backtestResult, string, error) {
 	args := []string{
-		filepath.Join("Backtest", "GridBasic.py"),
+		gridScript,
 		"--data", dataPath,
 		"--lower", fmt.Sprintf("%f", req.Lower),
 		"--upper", fmt.Sprintf("%f", req.Upper),
@@ -332,6 +351,19 @@ func executeBacktest(dataPath string, req backtestRequest, levels int) (backtest
 	}
 
 	return result, raw, nil
+}
+
+func pythonPathsForPlatform() []string {
+	if runtime.GOOS == "windows" {
+		return []string{
+			filepath.Join(repoRoot, ".venv", "Scripts", "python.exe"),
+			filepath.Join(repoRoot, ".venv", "Scripts", "python"),
+		}
+	}
+	return []string{
+		filepath.Join(repoRoot, ".venv", "bin", "python3"),
+		filepath.Join(repoRoot, ".venv", "bin", "python"),
+	}
 }
 
 func listCSVOptions() ([]csvOption, error) {
